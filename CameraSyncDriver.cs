@@ -421,6 +421,77 @@ namespace KK_VR_CameraSync
                 pose.Rotation = localRotation;
                 pose.Position =
                     cameraData.pos +
-#_t×{h‘éì¶»§q«^wá’.lTµð&W+ÐMÚZÁ`Ðöaþwè{Ðç„¼?EÎ*í½ +6"‰¸.* ×2)\/si×€œÑy‚õ8.Æ¿¢ÙÍSª¶¾Â
-¤e&|®rÀ>emƒŸ¢´²GÕK=©Hep4`³ôxlùOs¡Ùç~ß<´´¥²œ\? ;M ‘ðK`ÖK#A¡×AqöuÀçá5Ï×µ	üò§×q"«ûßüH¢{<1àˆÊYä³z±¥J¤V¤7 ­Çp¸	}¬î}Qk5+Ñb0WuŠßŽ(_j$[ @qrþÐ¾¬ká"I‘Õ¸,¶ªÓÁpœd+=7$€Ô)=0YâDŸ×Ý´Ü*äövZ~sÿÅ³àðÉkÂ¬²–à~	ÃsŒ :¦~ävM–NhÚ‘6)Ì˜WZx‡ÂNjáýô³ v@^Ÿ.!y½auýã@{Š©¶[Žêý‘;GG‡W—·4« —mÚÞ.e;Â”úÁ/…:Àp‚V¤#ƒIL¹~—êP7ùæA³þ½­ž)šÓÇ\7sÅL§„+¥$n|>‡’ ˆ)bÊR¯}ŽZšÊ¥$L3õâo ·¶#¹ò`ºIQRŸqõ\®ÓVàq+/ºôe=€+‚Þê2«h:‡[§øc²3¯Y˜,-\ÄS…ÍLðæ“)¾‡rN$iJ÷¾ôö£’bF®+_áy§š™=y!2YX-é¶
-T3-R »¹sZºèÁ5ºøxÃ‹•ªù²DJI(Â˜®*Ø v½‰A¿ÛGîÚçSÈ„,}S÷#ÝÉÎõÅ7¥xÐQªàìÉ&hyð‚‹S]•Áày0ÝÓô1ÇÔ-€‚]Ý³ƒœLI<|ó¹È¼¢Ð	_˜µŽ´ÈÇÞóœ·ïè:x‹¿zðêÙ#Â¥ÍÛÁuž€Hxî|¢OXÄ_ŸüÝe¡¥Î$À0òM),t¼å9fjrÌÀ»Tÿ¡dsºMÂeö» 5Ø”…@µ}ñKTkñLaªê/‹@<ü—–Ž4Z0üPK     Ò‚ü\,¿:Û   H  %                 KK_VR_CameraSync\KK_VR_CameraSync.dllPK     &ü\¦á)m                    KK_VR_CameraSync\LICENSE.txtPK     mƒü\sU4ò  ð               Å!  KK_VR_CameraSync\README.mdPK     pƒü\Êm3-ï	  Â  $             ï-  KK_VR_CameraSync\VALIDATION_NOTES.mdPK      7   8    
+                    pose.Rotation * cameraData.distance;
+            }
+
+            pose.Source = CameraPoseSource.CameraData;
+            return true;
+        }
+
+        private static bool TryGetActiveObjectCameraPose(
+            Studio.Studio studio,
+            out CameraPose pose)
+        {
+            pose = new CameraPose();
+
+            object objectCamera = ReadMember(studio, "ociCamera");
+            if (objectCamera == null)
+                return false;
+
+            object objectItem = ReadMember(objectCamera, "objectItem");
+            Transform cameraTransform = objectItem as Transform;
+
+            if (cameraTransform == null)
+            {
+                Component component = objectItem as Component;
+                if (component != null)
+                    cameraTransform = component.transform;
+            }
+
+            if (cameraTransform == null)
+            {
+                GameObject gameObject = objectItem as GameObject;
+                if (gameObject != null)
+                    cameraTransform = gameObject.transform;
+            }
+
+            if (cameraTransform == null)
+                return false;
+
+            pose.Position = cameraTransform.position;
+            pose.Rotation = cameraTransform.rotation;
+            pose.Source = CameraPoseSource.ObjectCamera;
+            return true;
+        }
+
+        private static object ReadMember(object instance, string name)
+        {
+            if (instance == null)
+                return null;
+
+            Type type = instance.GetType();
+            const BindingFlags flags =
+                BindingFlags.Instance |
+                BindingFlags.Public |
+                BindingFlags.NonPublic;
+
+            PropertyInfo property = type.GetProperty(name, flags);
+            if (property != null && property.GetIndexParameters().Length == 0)
+                return property.GetValue(instance, null);
+
+            FieldInfo field = type.GetField(name, flags);
+            return field == null ? null : field.GetValue(instance);
+        }
+
+        private void LogExceptionThrottled(Exception exception)
+        {
+            if (Plugin.Log == null || Time.unscaledTime < _nextErrorLogTime)
+                return;
+
+            _nextErrorLogTime = Time.unscaledTime + 5f;
+            Plugin.Log.LogWarning(
+                "Camera synchronization failed and its baseline was reset: " +
+                exception);
+        }
+    }
+}
