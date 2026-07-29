@@ -2,7 +2,7 @@ using System;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
-using Harmony;
+using HarmonyLib;
 using UnityEngine;
 
 namespace KK_VR_CameraSync
@@ -11,27 +11,32 @@ namespace KK_VR_CameraSync
     [BepInPlugin(Guid, Name, Version)]
     [BepInDependency(
         "KKCharaStudioVRPlugin.KKCharaStudioVRPlugin",
-        BepInDependency.DependencyFlags.HardDependency)]
+        BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string Guid = "yukyo.kkvr.camerasync";
         public const string Name = "KK VR Camera Sync";
-        public const string Version = "0.1.0";
+        public const string Version = "0.1.5";
 
         internal static Plugin Instance { get; private set; }
         internal static ManualLogSource Log { get; private set; }
 
         internal ConfigEntry<bool> SyncEnabled { get; private set; }
         internal ConfigEntry<bool> PreserveHeadTracking { get; private set; }
+        internal ConfigEntry<bool> AlignInitialStudioCamera { get; private set; }
+        internal ConfigEntry<CameraRotationMode> InitialAlignmentRotationMode { get; private set; }
         internal ConfigEntry<CameraRotationMode> RotationMode { get; private set; }
         internal ConfigEntry<PositionFollowMode> PositionMode { get; private set; }
         internal ConfigEntry<float> CutPositionThreshold { get; private set; }
         internal ConfigEntry<bool> ReadObjectCamera { get; private set; }
         internal ConfigEntry<KeyboardShortcut> ToggleShortcut { get; private set; }
+        internal ConfigEntry<int> ConfigRevision { get; private set; }
 
         internal CameraSyncDriver Driver { get; private set; }
 
-        private HarmonyInstance _harmony;
+        private Harmony _harmony;
+        private bool _cameraHelperPatchesInstalled;
+        private float _nextCameraHelperPatchAttemptTime;
         private bool _applicationQuitting;
 
         private void Awake()
@@ -50,6 +55,18 @@ namespace KK_VR_CameraSync
                 "Preserve head tracking",
                 true,
                 "Apply camera deltas to the VR origin while preserving the headset's relative pose.");
+
+            AlignInitialStudioCamera = Config.Bind(
+                "General",
+                "Align initial Studio camera",
+                true,
+                "Align the headset once to the scene card's initial Studio camera after loading.");
+
+            InitialAlignmentRotationMode = Config.Bind(
+                "General",
+                "Initial alignment rotation mode",
+                CameraRotationMode.YawOnly,
+                "YawOnly matches Ermin KK_VR's upright origin; Full may be normalized by KK_VR; None aligns position only.");
 
             RotationMode = Config.Bind(
                 "General",
@@ -83,15 +100,31 @@ namespace KK_VR_CameraSync
                 new KeyboardShortcut(KeyCode.None),
                 "Optional shortcut for enabling or disabling camera synchronization.");
 
+            ConfigRevision = Config.Bind(
+                "Internal",
+                "Config revision",
+                0,
+                "Internal migration marker. Do not edit.");
+
+            if (ConfigRevision.Value < 2)
+            {
+                // v0.1.2 defaulted to Full, but Ermin KK_VR normalizes the
+                // tracking origin back to yaw-only after our alignment. That
+                // second normalization changes both the HMD angle and position.
+                if (InitialAlignmentRotationMode.Value == CameraRotationMode.Full)
+                    InitialAlignmentRotationMode.Value = CameraRotationMode.YawOnly;
+
+                ConfigRevision.Value = 2;
+            }
+
             Driver = gameObject.AddComponent<CameraSyncDriver>();
 
             try
             {
-                _harmony = HarmonyInstance.Create(Guid);
-                _harmony.PatchAll(typeof(NativeMoveToCurrentPatch));
-                _harmony.PatchAll(typeof(NativeCurrentToCameraCtrlPatch));
+                _harmony = new Harmony(Guid);
                 _harmony.PatchAll(typeof(NativeLoadScenePatch));
                 _harmony.PatchAll(typeof(NativeImportScenePatch));
+                TryInstallCameraHelperPatches();
             }
             catch (Exception exception)
             {
@@ -108,6 +141,13 @@ namespace KK_VR_CameraSync
 
         private void Update()
         {
+            if (!_cameraHelperPatchesInstalled &&
+                Time.unscaledTime >= _nextCameraHelperPatchAttemptTime)
+            {
+                _nextCameraHelperPatchAttemptTime = Time.unscaledTime + 1f;
+                TryInstallCameraHelperPatches();
+            }
+
             if (ToggleShortcut.Value.IsDown())
             {
                 SyncEnabled.Value = !SyncEnabled.Value;
@@ -117,6 +157,33 @@ namespace KK_VR_CameraSync
                 Logger.LogInfo(
                     "Camera synchronization " +
                     (SyncEnabled.Value ? "enabled." : "disabled."));
+            }
+        }
+
+        private void TryInstallCameraHelperPatches()
+        {
+            if (_harmony == null || _cameraHelperPatchesInstalled)
+                return;
+
+            if (PatchTargets.FindCameraHelperMethod("MoveToCurrent") == null ||
+                PatchTargets.FindCameraHelperMethod("CurrentToCameraCtrl") == null)
+            {
+                return;
+            }
+
+            try
+            {
+                _harmony.PatchAll(typeof(NativeMoveToCurrentPatch));
+                _harmony.PatchAll(typeof(NativeCurrentToCameraCtrlPatch));
+                _cameraHelperPatchesInstalled = true;
+                Logger.LogInfo(
+                    "Ermin KKCharaStudioVR camera helper compatibility patches installed.");
+            }
+            catch (Exception exception)
+            {
+                Logger.LogWarning(
+                    "Ermin KKCharaStudioVR camera helper patches are not ready yet: " +
+                    exception.Message);
             }
         }
 
@@ -133,7 +200,7 @@ namespace KK_VR_CameraSync
             {
                 try
                 {
-                    _harmony.UnpatchAll(Guid);
+                    _harmony.UnpatchSelf();
                 }
                 catch
                 {

@@ -2,8 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$GameRoot,
 
-    [Parameter(Mandatory = $true)]
-    [string]$KKVRRoot,
+    [string]$KKVRRoot = "",
 
     [string]$Configuration = "Release"
 )
@@ -17,10 +16,17 @@ if ($null -eq $msbuild) {
     throw "MSBuild was not found. Install Visual Studio Build Tools with the .NET Framework 3.5 targeting pack."
 }
 
-& $msbuild.Source $project `
-    "/p:Configuration=$Configuration" `
-    "/p:GameRoot=$GameRoot" `
-    "/p:KKVRRoot=$KKVRRoot"
+$buildArguments = @(
+    $project,
+    "/p:Configuration=$Configuration",
+    "/p:GameRoot=$GameRoot"
+)
+
+if (-not [string]::IsNullOrWhiteSpace($KKVRRoot)) {
+    $buildArguments += "/p:KKVRRoot=$KKVRRoot"
+}
+
+& $msbuild.Source $buildArguments
 
 if ($LASTEXITCODE -ne 0) {
     throw "Build failed with exit code $LASTEXITCODE."

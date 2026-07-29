@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.cs text
+*.md text
+*.ps1 text
+*.csproj text
+*.dll binary
+*.zip binary

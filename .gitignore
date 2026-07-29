@@ -1,8 +1,11 @@
 bin/
 obj/
 .vs/
+dist/
+artifacts/
 *.user
 *.suo
 *.pdb
 *.cache
 *.log
+*.bak

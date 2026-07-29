@@ -42,9 +42,17 @@ namespace KK_VR_CameraSync
 
         private bool _baselineValid;
         private CameraPose _previousCameraPose;
+        private bool _initialAlignmentPending;
+        private bool _initialAlignmentPoseValid;
+        private CameraPose _initialAlignmentPose;
+        private int _initialAlignmentReadyFrame = -1;
+        private string _initialAlignmentReason = "Studio scene loaded";
         private int _suspendDepth;
         private bool _nativeSceneLoadPending;
+        private int _nativeSceneLoadDepth;
         private int _nativeSceneLoadStartFrame = -1;
+        private bool _sceneInfoObserved;
+        private object _lastSceneInfo;
         private int _resumeFrame = -1;
         private float _nextErrorLogTime;
 
@@ -83,21 +91,67 @@ namespace KK_VR_CameraSync
 
         internal void BeginNativeSceneLoad()
         {
+            _nativeSceneLoadDepth++;
+            if (_nativeSceneLoadDepth > 1)
+                return;
+
             _nativeSceneLoadPending = true;
             _nativeSceneLoadStartFrame = Time.frameCount;
             _baselineValid = false;
+            _initialAlignmentPending = false;
+            _initialAlignmentPoseValid = false;
+            _initialAlignmentReadyFrame = -1;
         }
 
-        internal void CompleteNativeCameraReset()
+        internal void CompleteNativeSceneLoad(bool succeeded)
         {
+            if (_nativeSceneLoadDepth > 0)
+                _nativeSceneLoadDepth--;
+
+            if (_nativeSceneLoadDepth > 0)
+                return;
+
             _nativeSceneLoadPending = false;
             _nativeSceneLoadStartFrame = -1;
             _baselineValid = false;
             _resumeFrame = Math.Max(_resumeFrame, Time.frameCount + 2);
+
+            if (!succeeded)
+                return;
+
+            CameraPose capturedPose;
+            if (TryGetSceneInitialCameraPose(out capturedPose))
+            {
+                _initialAlignmentPose = capturedPose;
+                _initialAlignmentPoseValid = true;
+            }
+
+            RequestInitialAlignment("Studio scene loaded");
+        }
+
+        internal void CompleteNativeCameraReset()
+        {
+            _baselineValid = false;
+            _resumeFrame = Math.Max(_resumeFrame, Time.frameCount + 2);
+        }
+
+        private void RequestInitialAlignment(string reason)
+        {
+            _initialAlignmentPending = true;
+            _initialAlignmentReadyFrame =
+                Math.Max(_initialAlignmentReadyFrame, Time.frameCount + 2);
+            _initialAlignmentReason = reason;
+            _baselineValid = false;
         }
 
         private void LateUpdate()
         {
+            if (ObserveStudioSceneInfoChange())
+            {
+                HandleObservedStudioSceneChange();
+                return;
+            }
+
             RecoverStaleSceneLoadSuspension();
 
             Plugin plugin = Plugin.Instance;
@@ -130,13 +184,108 @@ namespace KK_VR_CameraSync
                     return;
                 }
 
+                CameraPose fullCurrentCameraPose = currentCameraPose;
                 currentCameraPose.Rotation =
-                    FilterRotation(currentCameraPose.Rotation, plugin.RotationMode.Value);
+                    FilterRotation(
+                        currentCameraPose.Rotation,
+                        plugin.RotationMode.Value);
+
+                if (_initialAlignmentPending)
+                {
+                    if (!plugin.AlignInitialStudioCamera.Value)
+                    {
+                        _initialAlignmentPending = false;
+                        _initialAlignmentPoseValid = false;
+                        _initialAlignmentReadyFrame = -1;
+                    }
+                    else
+                    {
+                        if (Time.frameCount < _initialAlignmentReadyFrame)
+                        {
+                            _baselineValid = false;
+                            return;
+                        }
+
+                        CameraPose targetPose =
+                            _initialAlignmentPoseValid
+                                ? _initialAlignmentPose
+                                : fullCurrentCameraPose;
+                        Quaternion initialRotation = FilterRotation(
+                            targetPose.Rotation,
+                            plugin.InitialAlignmentRotationMode.Value);
+                        SnapHeadToTarget(
+                            origin,
+                            head,
+                            targetPose.Position,
+                            initialRotation,
+                            plugin.InitialAlignmentRotationMode.Value);
+
+                        _initialAlignmentPending = false;
+                        _initialAlignmentPoseValid = false;
+                        _initialAlignmentReadyFrame = -1;
+
+                        CameraPose followBaseline = targetPose;
+                        followBaseline.Rotation = FilterRotation(
+                            followBaseline.Rotation,
+                            plugin.RotationMode.Value);
+                        _previousCameraPose = followBaseline;
+                        _baselineValid = true;
+
+                        // If an auto-playing Timeline advanced after the scene
+                        // was loaded, apply that motion from the captured initial
+                        // pose after the one-time alignment.
+                        if (currentCameraPose.Source == followBaseline.Source)
+                        {
+                            float initialPositionDelta = Vector3.Distance(
+                                currentCameraPose.Position,
+                                followBaseline.Position);
+                            float initialRotationDelta = Quaternion.Angle(
+                                currentCameraPose.Rotation,
+                                followBaseline.Rotation);
+                            if (initialPositionDelta > PositionChangeThreshold ||
+                                initialRotationDelta > RotationChangeThreshold)
+                            {
+                                ApplyCameraMotion(
+                                    origin,
+                                    head,
+                                    currentCameraPose,
+                                    initialPositionDelta);
+                            }
+                        }
+
+                        _previousCameraPose = currentCameraPose;
+
+                        if (Plugin.Log != null)
+                        {
+                            Plugin.Log.LogInfo(
+                                "Initial VR view aligned to Studio camera. Source=" +
+                                currentCameraPose.Source +
+                                ", reason=" +
+                                _initialAlignmentReason +
+                                ", position=" +
+                                FormatVector(targetPose.Position) +
+                                ", rotationMode=" +
+                                plugin.InitialAlignmentRotationMode.Value +
+                                ".");
+                        }
+
+                        return;
+                    }
+                }
 
                 if (!_baselineValid)
                 {
                     _previousCameraPose = currentCameraPose;
                     _baselineValid = true;
+                    return;
+                }
+
+                if (currentCameraPose.Source !=
+                    _previousCameraPose.Source)
+                {
+                    // CameraData and OCICamera are separate coordinate sources.
+                    // Switching between them is not itself camera animation.
+                    _previousCameraPose = currentCameraPose;
                     return;
                 }
 
@@ -146,10 +295,7 @@ namespace KK_VR_CameraSync
                 float rotationDelta = Quaternion.Angle(
                     currentCameraPose.Rotation,
                     _previousCameraPose.Rotation);
-                bool sourceChanged =
-                    currentCameraPose.Source != _previousCameraPose.Source;
                 bool cameraMoved =
-                    sourceChanged ||
                     positionDelta > PositionChangeThreshold ||
                     rotationDelta > RotationChangeThreshold;
 
@@ -171,26 +317,85 @@ namespace KK_VR_CameraSync
             }
         }
 
+        private bool ObserveStudioSceneInfoChange()
+        {
+            Studio.Studio studio =
+                Singleton<Studio.Studio>.Instance;
+            object currentSceneInfo =
+                studio == null
+                    ? null
+                    : (object)studio.sceneInfo;
+            if (currentSceneInfo == null)
+                return false;
+
+            if (!_sceneInfoObserved)
+            {
+                // The first SceneInfo belongs to the empty Studio startup.
+                // Remember it without moving the headset.
+                _sceneInfoObserved = true;
+                _lastSceneInfo = currentSceneInfo;
+                return false;
+            }
+
+            if (ReferenceEquals(
+                currentSceneInfo,
+                _lastSceneInfo))
+            {
+                return false;
+            }
+
+            _lastSceneInfo = currentSceneInfo;
+            return true;
+        }
+
+        private void HandleObservedStudioSceneChange()
+        {
+            _nativeSceneLoadPending = false;
+            _nativeSceneLoadDepth = 0;
+            _nativeSceneLoadStartFrame = -1;
+            _baselineValid = false;
+            _initialAlignmentPending = false;
+            _initialAlignmentPoseValid = false;
+            _initialAlignmentReadyFrame = -1;
+
+            CameraPose capturedPose;
+            if (TryGetSceneInitialCameraPose(out capturedPose))
+            {
+                _initialAlignmentPose = capturedPose;
+                _initialAlignmentPoseValid = true;
+            }
+
+            RequestInitialAlignment(
+                "Studio sceneInfo changed");
+
+            if (Plugin.Log != null)
+            {
+                Plugin.Log.LogInfo(
+                    "Studio scene card change detected; " +
+                    "initial VR alignment was scheduled.");
+            }
+        }
+
         private void RecoverStaleSceneLoadSuspension()
         {
             if (!_nativeSceneLoadPending ||
                 _nativeSceneLoadStartFrame < 0 ||
                 Time.frameCount - _nativeSceneLoadStartFrame <= 600 ||
                 IsSceneLoading())
-            {
                 return;
-            }
 
             _nativeSceneLoadPending = false;
+            _nativeSceneLoadDepth = 0;
             _nativeSceneLoadStartFrame = -1;
             _baselineValid = false;
             _resumeFrame = Time.frameCount + 2;
+            RequestInitialAlignment("recovered Studio scene load");
 
             if (Plugin.Log != null)
             {
                 Plugin.Log.LogWarning(
-                    "KK_VR did not call MoveToCurrent after scene loading; " +
-                    "camera synchronization resumed with a fresh baseline.");
+                    "A Studio scene load did not reach its postfix; " +
+                    "camera synchronization recovered with a fresh alignment.");
             }
         }
 
@@ -400,9 +605,55 @@ namespace KK_VR_CameraSync
                 return true;
             }
 
-            CameraControl cameraControl = studio.cameraCtrl;
-            CameraControl.CameraData cameraData = cameraControl.Export();
-            if (cameraData == null)
+            Studio.CameraControl cameraControl = studio.cameraCtrl;
+            Studio.CameraControl.CameraData cameraData = cameraControl.Export();
+            return TryConvertCameraData(
+                cameraControl,
+                cameraData,
+                out pose);
+        }
+
+        private bool TryGetSceneInitialCameraPose(
+            out CameraPose pose)
+        {
+            pose = new CameraPose();
+
+            Studio.Studio studio =
+                Singleton<Studio.Studio>.Instance;
+            if (studio == null || studio.cameraCtrl == null)
+                return false;
+
+            Plugin plugin = Plugin.Instance;
+            if (plugin != null &&
+                plugin.ReadObjectCamera.Value &&
+                TryGetActiveObjectCameraPose(studio, out pose))
+            {
+                return true;
+            }
+
+            Studio.CameraControl.CameraData savedCameraData =
+                ReadMember(
+                    studio.sceneInfo,
+                    "cameraSaveData")
+                as Studio.CameraControl.CameraData;
+            if (savedCameraData != null)
+            {
+                return TryConvertCameraData(
+                    studio.cameraCtrl,
+                    savedCameraData,
+                    out pose);
+            }
+
+            return TryGetStudioCameraPose(out pose);
+        }
+
+        private static bool TryConvertCameraData(
+            Studio.CameraControl cameraControl,
+            Studio.CameraControl.CameraData cameraData,
+            out CameraPose pose)
+        {
+            pose = new CameraPose();
+            if (cameraControl == null || cameraData == null)
                 return false;
 
             Quaternion localRotation = Quaternion.Euler(cameraData.rotate);
@@ -492,6 +743,14 @@ namespace KK_VR_CameraSync
             Plugin.Log.LogWarning(
                 "Camera synchronization failed and its baseline was reset: " +
                 exception);
+        }
+
+        private static string FormatVector(Vector3 value)
+        {
+            return "(" +
+                   value.x.ToString("F3") + ", " +
+                   value.y.ToString("F3") + ", " +
+                   value.z.ToString("F3") + ")";
         }
     }
 }

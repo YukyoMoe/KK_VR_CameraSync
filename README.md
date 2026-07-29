@@ -14,10 +14,15 @@ VR tracking origin 跟随《恋活》工作室最终计算出的相机姿态。
 - 支持完整旋转、仅水平旋转或禁用旋转跟随
 - 支持全部位移、仅切镜位移或禁用位置跟随
 - 保留头显相对于动画镜头的实际追踪姿态
+- 场景卡载入或导入完成后，按场景卡保存的初始镜头执行一次绝对位置对齐
+- Timeline 自动播放已经前进时，先恢复初始镜头，再衔接已发生的镜头增量
+- 进入空工作室时不强制移动头显
+- 初始对齐可独立选择完整旋转、仅水平旋转或仅位置
 - KK_VR 原生 `MoveToCurrent` 执行后自动重建同步基线
 - KK_VR 将 HMD 姿态反向写回 `CameraData` 时暂停同步，防止反馈循环
 - 场景加载和导入期间暂停同步
-- 场景加载后的原生相机重置未发生时，可以自动解除超时暂停
+- 场景加载结束后自动恢复同步，不再等待 KK_VR 调用相机重置
+- `CameraData` 与对象相机来源切换时只重建基线，避免被误判为切镜
 
 如果 VMD/VNGE 只直接修改 `VRGIN_Camera (origin)`，而工作室相机保持
 静止，本插件不会干预。若同一帧中既有插件直接修改 VR origin，又有
@@ -35,10 +40,10 @@ KK_VR_CameraSync.dll
 复制到：
 
 ```text
-Koikatu\BepInEx\plugins\KK_VR\
+Koikatu\BepInEx\plugins\KK_VR_CameraSync\
 ```
 
-也可以解压 `KK_VR_CameraSync_v0.1.0_Experimental.zip`，然后把其中的
+也可以解压 `KK_VR_CameraSync_v0.1.5_Experimental.zip`，然后把其中的
 DLL 放入上述目录。
 
 启动 CharaStudio VR。首次成功加载后将生成配置文件：
@@ -47,20 +52,22 @@ DLL 放入上述目录。
 BepInEx\config\yukyo.kkvr.camerasync.cfg
 ```
 
-插件硬依赖的 KK_VR 插件 ID 为：
+插件会在运行时检测以下 KK_VR 插件 ID：
 
 ```text
 KKCharaStudioVRPlugin.KKCharaStudioVRPlugin
 ```
 
-如果日志提示缺少该依赖，请确认当前安装的是审查所对应的
-`Ermin610/KK_VR` 版本。
+该依赖使用软检测，因为 Ermin 的工作室 VR 插件可能由
+BepIn4Patcher 从 `BepInEx` 根目录转换和加载。
 
 ## 推荐初始配置
 
 ```ini
 Enabled = true
 Preserve head tracking = true
+Align initial Studio camera = true
+Initial alignment rotation mode = YawOnly
 Rotation follow mode = YawOnly
 Position follow mode = AllMotion
 Position threshold = 2
@@ -71,6 +78,14 @@ Read active OCICamera = true
 
 - `Enabled`：同步总开关。
 - `Preserve head tracking`：保留玩家真实转头和小范围移动，建议开启。
+- `Align initial Studio camera`：场景卡载入或导入完成后，只执行一次
+  绝对位置对齐。对齐目标优先使用场景卡保存的初始镜头，因此不受
+  Timeline 自动播放时机影响；进入空工作室、GripMove 和普通手动移动
+  不会触发。
+- `Initial alignment rotation mode`：
+  - `YawOnly`：默认值，与 Ermin KK_VR 的直立 tracking origin 一致。
+  - `Full`：尝试完整旋转，但可能被 Ermin KK_VR 再次直立化。
+  - `None`：只对齐位置。
 - `Rotation follow mode`：
   - `Full`：跟随俯仰、水平旋转和翻滚。
   - `YawOnly`：只跟随水平朝向，默认推荐。
@@ -119,33 +134,32 @@ Read active OCICamera = true
 
 要求：
 
-- `Ermin610/KK_VR` 源码，并已以 Release 配置构建
 - 包含 CharaStudio 和 BepInEx 的《恋活》游戏目录
-- KK_VR 使用的旧版兼容程序集
-  `BepInEx\0Harmony_BepInEx4.dll`
+- BepInEx 5 自带的 `BepInEx\core\0Harmony.dll`
+- Ermin 工作室 VR 使用的 `BepInEx\VRGIN_KKCS.dll`
 - 带有 .NET Framework 3.5 targeting pack 的 MSBuild
 
 在源码目录运行：
 
 ```powershell
-.\build.ps1 `
-  -GameRoot "D:\Games\Koikatu" `
-  -KKVRRoot "D:\Source\KK_VR"
+.\build.ps1 -GameRoot "D:\Games\Koikatu"
 ```
 
 或者直接调用 MSBuild：
 
 ```powershell
 msbuild KK_VR_CameraSync.csproj /p:Configuration=Release `
-  /p:GameRoot="D:\Games\Koikatu" `
-  /p:KKVRRoot="D:\Source\KK_VR"
+  /p:GameRoot="D:\Games\Koikatu"
 ```
 
-默认预期的 VRGIN 引用位置为：
+默认优先使用游戏中实际安装的 VRGIN：
 
 ```text
-$(KKVRRoot)\VRGIN_KKCS\bin\Release\net35\VRGIN_KKCS.dll
+$(GameRoot)\BepInEx\VRGIN_KKCS.dll
 ```
+
+如果该文件不存在，才回退到
+`$(KKVRRoot)\VRGIN_KKCS\bin\Release\net35\VRGIN_KKCS.dll`。
 
 输出文件为：
 
@@ -161,7 +175,7 @@ bin\Release\net35\KK_VR_CameraSync.dll
 正常加载时应看到类似：
 
 ```text
-Loaded v0.1.0. Generic Studio camera observation is enabled;
+Loaded v0.1.5. Generic Studio camera observation is enabled;
 Timeline is not a dependency.
 ```
 

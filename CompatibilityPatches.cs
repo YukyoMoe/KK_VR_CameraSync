@@ -1,6 +1,6 @@
 using System;
 using System.Reflection;
-using Harmony;
+using HarmonyLib;
 using Studio;
 
 namespace KK_VR_CameraSync
@@ -94,12 +94,20 @@ namespace KK_VR_CameraSync
         null)]
     internal static class NativeLoadScenePatch
     {
+        [HarmonyPrefix]
+        private static void Prefix()
+        {
+            Plugin plugin = Plugin.Instance;
+            if (plugin != null && plugin.Driver != null)
+                plugin.Driver.BeginNativeSceneLoad();
+        }
+
         [HarmonyPostfix]
         private static void Postfix(bool __result)
         {
             Plugin plugin = Plugin.Instance;
-            if (__result && plugin != null && plugin.Driver != null)
-                plugin.Driver.BeginNativeSceneLoad();
+            if (plugin != null && plugin.Driver != null)
+                plugin.Driver.CompleteNativeSceneLoad(__result);
         }
     }
 
@@ -110,12 +118,20 @@ namespace KK_VR_CameraSync
         null)]
     internal static class NativeImportScenePatch
     {
+        [HarmonyPrefix]
+        private static void Prefix()
+        {
+            Plugin plugin = Plugin.Instance;
+            if (plugin != null && plugin.Driver != null)
+                plugin.Driver.BeginNativeSceneLoad();
+        }
+
         [HarmonyPostfix]
         private static void Postfix(bool __result)
         {
             Plugin plugin = Plugin.Instance;
-            if (__result && plugin != null && plugin.Driver != null)
-                plugin.Driver.BeginNativeSceneLoad();
+            if (plugin != null && plugin.Driver != null)
+                plugin.Driver.CompleteNativeSceneLoad(__result);
         }
     }
 }

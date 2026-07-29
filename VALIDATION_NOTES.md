@@ -17,39 +17,48 @@
 - 能够编译为 .NET Framework 3.5 兼容程序集。
 - CLR image runtime 为 `v2.0.50727`。
 - 程序集名称为 `KK_VR_CameraSync`。
-- 程序集版本为 `0.1.0.0`。
+- 程序集版本为 `0.1.5.0`。
 - 没有 Timeline 程序集引用或 Timeline 硬依赖。
-- KK_VR 硬依赖 GUID 与审查到的插件源码一致。
+- KK_VR 软依赖 GUID 与审查到的插件源码一致。
 - 已实现连续 `CameraData` 位姿增量同步。
 - 活动对象相机读取为可选的反射路径。
-- KK_VR 原生 `MoveToCurrent` 执行后会重建相机基线。
+- KK_VR 原生 `MoveToCurrent` 执行后只会重建相机基线，不会再次执行
+  绝对位置对齐。
 - `CurrentToCameraCtrl` 执行期间会暂停同步，避免反向写回触发反馈。
-- `LoadScene` 和 `ImportScene` 会暂停跟随，直到 KK_VR 执行延迟的原生
-  相机重置。
-- 场景加载暂停具有超时恢复机制，避免兼容方法未触发时永久停用同步。
-- 已检查实验压缩包和源码压缩包的文件结构。
+- 仅场景卡载入/导入结束或 `sceneInfo` 确认发生场景卡切换后执行一次
+  绝对对齐。
+- 空工作室启动及 Unity 子场景载入不会触发绝对对齐。
+- 初始绝对位置优先读取场景卡保存的 `cameraSaveData` 或活动对象相机；
+  增量同步仍观察最终工作室相机数据。
+- Timeline 自动播放已经前进时，会在初始对齐后衔接保存镜头到当前镜头的
+  增量。
+- `CameraData` 与对象相机来源切换只会重建基线，不会被当成切镜。
+- v0.1.2 留下的 `Full` 初始旋转会自动迁移为 `YawOnly`。
+- 场景加载结束后按加载状态或短暂稳定窗口恢复，不再依赖 KK_VR
+  调用 `MoveToCurrent`。
+- 普通基线重建、短暂丢失相机和 GripMove 不会重新触发绝对对齐。
+- 已检查 v0.1.5 Release ZIP 的文件结构和其中 DLL 的哈希。
 
 当前实验 DLL：
 
 ```text
 文件名：KK_VR_CameraSync.dll
-大小：18432 字节
-SHA-256：E479A461139C836B227E362862DBAFFF0081260F5B750C6E98D669B347E44DC8
+大小：32768 字节
+SHA-256：2F893DE3CD99913743BAA86E1868830DC56E7AB617E1F7C0D3FDC20CCDE28671
 ```
 
 ## 构建环境限制
 
-构建工作区中没有用户实际游戏目录下的这些程序集：
+v0.1.5 已使用用户实际游戏目录中的这些程序集构建：
 
 - `CharaStudio_Data\Managed\UnityEngine.dll`
 - `CharaStudio_Data\Managed\Assembly-CSharp.dll`
-- 实际安装的 `BepInEx.dll`
-- 实际安装的 `0Harmony_BepInEx4.dll`
-- 实际构建的 `VRGIN_KKCS.dll`
+- `BepInEx\core\BepInEx.dll`
+- `BepInEx\core\0Harmony.dll`
+- `BepInEx\VRGIN_KKCS.dll`
 
-因此，随附的实验 DLL 使用：
-
-- 官方 .NET Framework 3.5 reference assemblies；
+构建产物引用 CLR 2.0，并已确认不再引用缺失的
+`0Harmony_BepInEx4.dll`。
 - 根据已审查 KK_VR 源码建立的接口签名引用；
 
 完成编译。
@@ -61,15 +70,13 @@ SHA-256：E479A461139C836B227E362862DBAFFF0081260F5B750C6E98D669B347E44DC8
 - 目标 CLR 版本；
 - 程序集引用名称；
 
-但不能代替针对目标游戏安装的真实 DLL 进行一次正式重编译，也不能
-代替 VR 实机运行测试。
+这些检查不能代替对不同 KK、KK_VR、Timeline 和 SteamVR 组合进行更广泛
+的实机兼容测试。
 
 ## 发布前必须完成
 
-1. 使用源码包中的 `build.ps1`，针对目标《恋活》安装目录重编译。
-2. 确认引用的是 KK_VR 实际使用的
-   `0Harmony_BepInEx4.dll`，而不是只有 `HarmonyLib` 命名空间的新版
-   `0Harmony.dll`。
+1. 使用源码中的 `build.ps1`，针对目标《恋活》安装目录重编译。
+2. 确认引用的是 BepInEx 5 当前安装的 `BepInEx\core\0Harmony.dll`。
 3. 确认实际 `VRGIN_KKCS.dll` 中存在：
    - `VRGIN.Core.VR.Active`
    - `VRGIN.Core.VR.Camera`
@@ -82,7 +89,7 @@ SHA-256：E479A461139C836B227E362862DBAFFF0081260F5B750C6E98D669B347E44DC8
 5. 确认 `CameraControl.CameraData.distance` 的类型和语义与已审查源码一致。
 6. 完成 README 中的全部测试项目。
 7. 保存成功和失败场景的完整 BepInEx 日志。
-8. 在完成实机验证前，将 v0.1.0 标记为实验版本。
+8. 在完成更广泛的版本兼容测试前，将 v0.1.5 标记为实验版本。
 
 ## 首轮测试重点
 
@@ -116,7 +123,8 @@ SHA-256：E479A461139C836B227E362862DBAFFF0081260F5B750C6E98D669B347E44DC8
 
 - 保存时 HMD 写回 `CameraData` 不会触发额外同步；
 - 加载过程中不跟随临时相机值；
-- KK_VR 完成 `MoveToCurrent` 后只重建基线，不重复应用镜头位移；
+- 场景卡加载完成后按保存的初始镜头执行一次绝对对齐；
+- Timeline 已自动前进时，对齐后衔接到当前镜头；
 - 加载后不会再次跳到陈旧 `CameraData`。
 
 ### 玩家主动移动
@@ -130,7 +138,8 @@ SHA-256：E479A461139C836B227E362862DBAFFF0081260F5B750C6E98D669B347E44DC8
 
 ## 当前已知限制
 
-- 尚未在用户的实际 KK/SteamVR 环境中运行。
+- 已在用户的 KK/SteamVR 环境验证：插件加载、Timeline 运镜跟随和
+  场景卡初始位置对齐可工作。
 - 尚未验证所有 Timeline 版本和第三方相机轨道。
 - 尚未完整移植 KKS 版本的 ExternalVR、VMD/VNGE 多驱动仲裁。
 - 活动 `OCICamera` 依赖反射；不同 KK `Assembly-CSharp` 版本可能使用
